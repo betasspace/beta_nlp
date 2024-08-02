@@ -104,16 +104,17 @@ def collate_fn(batch):
     token_index = []
     max_length = 0
     for i, (label, comment) in enumerate(batch):
-        tokens = tokenizer(comment)
+        if label == 1:
+            target.append(0)
+        elif label == 2:
+            target.append(1)
+        else:
+            raise Exception(f"label: {label} is unexpect!")
 
+        tokens = tokenizer(comment)
         token_index.append(vocab(tokens))
         if len(tokens) > max_length:
             max_length = len(tokens)
-
-        if label == "pos":
-            target.append(0)
-        else:
-            target.append(1)
 
     token_index = [index + [0]*(max_length-len(index)) for index in token_index]
     return (torch.tensor(target).to(torch.int64), torch.tensor(token_index).to(torch.int32))
@@ -148,7 +149,7 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
             optimizer.step()
 
             if step % log_step_interval == 0:
-                logging.warning(f"epoch_index: {epoch_index}, batch_index: {batch_index}, ema_loss: {ema_loss.item()}")
+                logging.warning(f"epoch_index: {epoch_index}, batch_index: {batch_index}, ema_loss: {ema_loss.item()}, bce_loss: {bce_loss.item()}")
 
             if step % save_step_interval == 0:
                 os.makedirs(save_path, exist_ok=True)
@@ -176,7 +177,7 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
                     ema_eval_loss = 0.9*ema_eval_loss + 0.1*eval_bce_loss
                 acc = total_acc_account/total_account
 
-                logging.warning(f"eval_ema_loss: {ema_eval_loss.item()}, eval_acc: {acc.item()}")
+                logging.warning(f"eval_ema_loss: {ema_eval_loss.item()}, eval_acc: {acc}")
                 model.train()
 
 # step4 测试代码
