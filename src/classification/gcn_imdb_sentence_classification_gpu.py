@@ -128,13 +128,13 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
     if resume != "":
         #  加载之前训过的模型的参数文件
         logging.warning(f"loading from {resume}")
-        checkpoint = torch.load(resume, map_location="cuda:0")
+        checkpoint = torch.load(resume, map_location="cuda")
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
         start_step = checkpoint['step']
-    
-    model = nn.DataParallel(model.cuda(), device_ids=[0,1]) # 模型拷贝，放入DP中
+    else:
+        model.cuda() # 模型拷贝
 
     for epoch_index in range(start_epoch, num_epoch):
         ema_loss = 0.
@@ -165,7 +165,7 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
                 torch.save({
                     'epoch': epoch_index,
                     'step': step,
-                    'model_state_dict': model.module.state_dict(), # DP.module == model
+                    'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'loss': bce_loss,
                 }, save_file)
@@ -192,12 +192,7 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
 if __name__ == "__main__":
     if torch.cuda.is_available():
         logging.warning("Cuda is available!")
-        if torch.cuda.device_count() > 1:
-            logging.warning(f"Find {torch.cuda.device_count()} GPUs !")
-            BATCH_SIZE = BATCH_SIZE * torch.cuda.device_count()
-        else:
-            logging.warning("Too few GPUs!")
-            raise Exception("Too few GPUs!")
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     else:
         logging.warning("Cuda is not available!")
         raise Exception("Cuda is not available!")
