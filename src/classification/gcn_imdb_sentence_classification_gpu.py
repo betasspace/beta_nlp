@@ -128,13 +128,13 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
     if resume != "":
         #  加载之前训过的模型的参数文件
         logging.warning(f"loading from {resume}")
-        checkpoint = torch.load(resume, map_location="cuda")
+        checkpoint = torch.load(resume, map_location="cuda:0")
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
         start_step = checkpoint['step']
     else:
-        model.cuda() # 模型拷贝
+        model.cuda(0) # 模型拷贝
 
     for epoch_index in range(start_epoch, num_epoch):
         ema_loss = 0.
@@ -146,8 +146,8 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
 
             # tensor.cuda() 需要重新赋值，nn.module.cuda()不需要赋值
             # 数据拷贝
-            token_index = token_index.cuda() 
-            target = target.cuda()
+            token_index = token_index.cuda(0) 
+            target = target.cuda(0)
 
             logits = model(token_index)
             bce_loss = F.binary_cross_entropy(torch.sigmoid(logits), F.one_hot(target, num_classes=2).to(torch.float32))
@@ -179,6 +179,10 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
                 total_account = 0
                 for eval_batch_index, (eval_target, eval_token_index) in enumerate(eval_data_loader):
                     total_account += eval_target.shape[0]
+
+                    eval_token_index = eval_token_index.cuda(0)
+                    eval_target = eval_target.cuda(0)
+
                     eval_logits = model(eval_token_index)
                     total_acc_account += (torch.argmax(eval_logits, dim=-1) == eval_target).sum().item()
                     eval_bce_loss = F.binary_cross_entropy(torch.sigmoid(eval_logits), F.one_hot(eval_target, num_classes=2).to(torch.float32))

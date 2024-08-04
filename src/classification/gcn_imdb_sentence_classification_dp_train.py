@@ -179,6 +179,10 @@ def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_
                 total_account = 0
                 for eval_batch_index, (eval_target, eval_token_index) in enumerate(eval_data_loader):
                     total_account += eval_target.shape[0]
+
+                    eval_target = eval_target.cuda()
+                    eval_token_index = eval_token_index.cuda()
+
                     eval_logits = model(eval_token_index)
                     total_acc_account += (torch.argmax(eval_logits, dim=-1) == eval_target).sum().item()
                     eval_bce_loss = F.binary_cross_entropy(torch.sigmoid(eval_logits), F.one_hot(eval_target, num_classes=2).to(torch.float32))
