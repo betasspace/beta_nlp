@@ -205,17 +205,18 @@ def train(local_rank, train_dataset, eval_dataset, model, optimizer, num_epoch, 
                 ema_eval_loss = 0
                 total_acc_account = 0
                 total_account = 0
-                for eval_batch_index, (eval_target, eval_token_index) in enumerate(eval_data_loader):
-                    total_account += eval_target.shape[0]
-                    
-                    eval_target = eval_target.cuda(local_rank)
-                    eval_token_index = eval_token_index.cuda(local_rank)
+                with torch.no_grad():
+                    for eval_batch_index, (eval_target, eval_token_index) in enumerate(eval_data_loader):
+                        total_account += eval_target.shape[0]
+                        
+                        eval_target = eval_target.cuda(local_rank)
+                        eval_token_index = eval_token_index.cuda(local_rank)
 
-                    eval_logits = model(eval_token_index)
-                    total_acc_account += (torch.argmax(eval_logits, dim=-1) == eval_target).sum().item()
-                    eval_bce_loss = F.binary_cross_entropy(torch.sigmoid(eval_logits), F.one_hot(eval_target, num_classes=2).to(torch.float32))
-                    ema_eval_loss = 0.9*ema_eval_loss + 0.1*eval_bce_loss
-                acc = total_acc_account/total_account
+                        eval_logits = model(eval_token_index)
+                        total_acc_account += (torch.argmax(eval_logits, dim=-1) == eval_target).sum().item()
+                        eval_bce_loss = F.binary_cross_entropy(torch.sigmoid(eval_logits), F.one_hot(eval_target, num_classes=2).to(torch.float32))
+                        ema_eval_loss = 0.9*ema_eval_loss + 0.1*eval_bce_loss
+                    acc = total_acc_account/total_account
 
                 logging.warning(f"eval_ema_loss: {ema_eval_loss.item()}, eval_acc: {acc}")
                 model.train()
@@ -236,8 +237,11 @@ if __name__ == "__main__":
     
     local_rank = int(os.environ["LOCAL_RANK"])
     print(f"local_rank: {local_rank}")
-    n_gpus = 2
-    torch.distributed.init_process_group("nccl", world_size=n_gpus, rank=local_rank)
+
+    world_size = int(os.environ["WORLD_SIZE"])
+    print(f"world_size: {world_size}") 
+
+    torch.distributed.init_process_group("nccl", world_size=world_size, rank=local_rank)
     torch.cuda.device(local_rank)
 
     model = GCNN()
