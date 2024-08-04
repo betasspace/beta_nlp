@@ -6,18 +6,13 @@
 # Last Modified Date: 06.01.2022
 # Last Modified By  : admin <admin>
 
-import argparse
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-
+import torchtext
 from torchtext.datasets import IMDB
 # pip install torchtext 安装指令
-from torchtext.datasets.imdb import NUM_LINES  # noqa: F401
+from torchtext.datasets.imdb import NUM_LINES
 from torchtext.data import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
 from torchtext.data.functional import to_map_style_dataset
@@ -31,19 +26,14 @@ logging.basicConfig(
     format="%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s",
 )
 
-parser = argparse.ArgumentParser(description='GCN_DDP')
-parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
-                    help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=100, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                    help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=3, type=int,
-                    metavar='N')
-parser.add_argument('-wd', '--weight_decay', default=1e-3, type=float,
-                    metavar='N')
-parser.add_argument('--local_rank', default=0, type=int, help='node rank for distributed training')
-args = parser.parse_args()
+import debugpy
+try:
+    debugpy.listen(("127.0.0.1", 10001))
+    print("Code is ready, waiting for debugger attach!")
+    debugpy.wait_for_client()
+except Exception as e:
+    pass
+
 
 VOCAB_SIZE = 15000
 # 第一期： 编写GCNN模型代码
@@ -140,42 +130,26 @@ def collate_fn(batch):
 
 
 # step3 编写训练代码
-def train(train_dataset, eval_dataset, model, optimizer, num_epoch, log_step_interval, save_step_interval, eval_step_interval, save_path, resume=""):
+def train(train_data_loader, eval_data_loader, model, optimizer, num_epoch, log_step_interval, save_step_interval, eval_step_interval, save_path, resume=""):
     """ 此处data_loader是map-style dataset """
     start_epoch = 0
     start_step = 0
     if resume != "":
         #  加载之前训过的模型的参数文件
         logging.warning(f"loading from {resume}")
-        checkpoint = torch.load(resume, map_location="cuda:0")
+        checkpoint = torch.load(resume)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
         start_step = checkpoint['step']
-    
-    model = nn.parallel.DistributedDataParallel(model.cuda(args.local_rank), device_ids=[args.local_rank]) # 模型拷贝，放入DP中
-
-    train_sampler = DistributedSampler(train_dataset)
-    train_data_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn, sampler=train_sampler)
-
-    eval_data_loader = DataLoader(eval_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn)
-
 
     for epoch_index in range(start_epoch, num_epoch):
         ema_loss = 0.
         num_batches = len(train_data_loader)
 
-        train_sampler.set_epoch(epoch_index) # 每个epoch修改随机种子
-
         for batch_index, (target, token_index) in enumerate(train_data_loader):
             optimizer.zero_grad()
             step = num_batches*(epoch_index) + batch_index + 1
-
-            # 数据拷贝
-            # tensor.cuda() 需要重新赋值，nn.module.cuda()不需要赋值
-            token_index = token_index.cuda(args.local_rank) 
-            target = target.cuda(args.local_rank)
-
             logits = model(token_index)
             bce_loss = F.binary_cross_entropy(torch.sigmoid(logits), F.one_hot(target, num_classes=2).to(torch.float32))
             ema_loss = 0.9*ema_loss + 0.1*bce_loss
@@ -186,13 +160,13 @@ def train(train_dataset, eval_dataset, model, optimizer, num_epoch, log_step_int
             if step % log_step_interval == 0:
                 logging.warning(f"epoch_index: {epoch_index}, batch_index: {batch_index}, ema_loss: {ema_loss.item()}, bce_loss: {bce_loss.item()}")
 
-            if step % save_step_interval == 0 and args.local_rank == 0:
+            if step % save_step_interval == 0:
                 os.makedirs(save_path, exist_ok=True)
                 save_file = os.path.join(save_path, f"step_{step}.pt")
                 torch.save({
                     'epoch': epoch_index,
                     'step': step,
-                    'model_state_dict': model.module.state_dict(), # DP.module == model
+                    'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'loss': bce_loss,
                 }, save_file)
@@ -217,30 +191,17 @@ def train(train_dataset, eval_dataset, model, optimizer, num_epoch, log_step_int
 
 # step4 测试代码
 if __name__ == "__main__":
-    if torch.cuda.is_available():
-        logging.warning("Cuda is available!")
-        if torch.cuda.device_count() > 1:
-            logging.warning(f"Find {torch.cuda.device_count()} GPUs !")
-            BATCH_SIZE = BATCH_SIZE * torch.cuda.device_count()
-        else:
-            logging.warning("Too few GPUs!")
-            raise Exception("Too few GPUs!")
-    else:
-        logging.warning("Cuda is not available!")
-        raise Exception("Cuda is not available!")
-    
-    n_gpus = 2
-    torch.distributed.init_process_group("nccl", world_size=n_gpus, rank=args.local_rank)
-    torch.cuda.device(args.local_rank)
-
     model = GCNN()
     #  model = TextClassificationModel()
     print("模型总参数:", sum(p.numel() for p in model.parameters()))
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     train_data_iter = IMDB(root='.data', split='train') # Dataset类型的对象
+    train_data_loader = torch.utils.data.DataLoader(to_map_style_dataset(train_data_iter), batch_size=BATCH_SIZE, collate_fn=collate_fn, shuffle=True)
+
     eval_data_iter = IMDB(root='.data', split='test') # Dataset类型的对象
+    eval_data_loader = torch.utils.data.DataLoader(to_map_style_dataset(eval_data_iter), batch_size=8, collate_fn=collate_fn)
     resume = ""
 
-    train(to_map_style_dataset(train_data_iter), to_map_style_dataset(eval_data_iter), model, optimizer, num_epoch=10, log_step_interval=20, save_step_interval=500, eval_step_interval=300, save_path="./logs_imdb_text_classification", resume=resume)
+    train(train_data_loader, eval_data_loader, model, optimizer, num_epoch=10, log_step_interval=20, save_step_interval=500, eval_step_interval=300, save_path="./logs_imdb_text_classification", resume=resume)
 
